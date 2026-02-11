@@ -42,6 +42,17 @@
             white-space: nowrap;
             display: none; /* 체크박스로 토글하기 전까지 숨김 */
         }
+        .element-label {
+            position: absolute;
+            color: #FFD700; /* 금색 텍스트 */
+            background: rgba(0, 0, 50, 0.5); /* 반투명 남색 배경 */
+            padding: 1px 3px;
+            font-size: 10px;
+            font-family: monospace;
+            border-radius: 2px;
+            white-space: nowrap;
+            display: none; /* 체크박스로 토글하기 전까지 숨김 */
+        }
         /* --- Label Styles End --- */
 
         #info-overlay {
@@ -93,6 +104,12 @@
                 <label for="toggle-labels" class="ml-2 block text-sm text-gray-900">노드 번호 표시</label>
             </div>
             <p class="text-xs text-gray-500 -mt-2">참고: 노드 수가 많으면 성능이 저하될 수 있습니다.</p>
+
+            <!-- Element Label Toggle -->
+            <div class="flex items-center">
+                <input type="checkbox" id="toggle-element-labels" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                <label for="toggle-element-labels" class="ml-2 block text-sm text-gray-900">부재 번호 표시</label>
+            </div>
 
 
             <div id="status-message" class="text-sm mt-2 text-gray-700"></div>
@@ -146,6 +163,8 @@
         
         // Array to store node labels and their 3D positions
         let nodeLabels = [];
+        // Array to store element labels and their 3D positions
+        let elementLabels = [];
 
         // --- MCT 데이터 파싱 함수 (강화된 로직) ---
         function parseMCT(mctText) {
@@ -370,6 +389,7 @@
                 labelContainer.innerHTML = '';
             }
             nodeLabels = [];
+            elementLabels = [];
 
             const nodes = data.nodes;
             const elements = data.elements;
@@ -441,15 +461,23 @@
                     const axis = new THREE.Vector3(0, 1, 0); 
                     mesh.quaternion.setFromUnitVectors(axis, direction);
 
-                    mesh.userData = { 
-                        id: iEL, 
-                        type: 'Element', 
-                        nodeI: element.nodeI, 
+                    mesh.userData = {
+                        id: iEL,
+                        type: 'Element',
+                        nodeI: element.nodeI,
                         nodeJ: element.nodeJ,
                         elementType: element.type,
                         originalColor: BEAM_COLOR
                     };
                     scene.add(mesh);
+
+                    // --- Create Element Label at midpoint ---
+                    const midPoint = new THREE.Vector3().addVectors(startPoint, endPoint).multiplyScalar(0.5);
+                    const elemLabelDiv = document.createElement('div');
+                    elemLabelDiv.className = 'element-label';
+                    elemLabelDiv.textContent = iEL;
+                    labelContainer.appendChild(elemLabelDiv);
+                    elementLabels.push({ element: elemLabelDiv, position: midPoint });
                 } else {
                     console.warn(`Element ${iEL} skipped: Node ${element.nodeI} or ${element.nodeJ} not found.`);
                 }
@@ -508,41 +536,62 @@
 
         // --- New Function: Update Labels ---
         function updateLabels() {
-            const showLabels = document.getElementById('toggle-labels').checked;
-            if (nodeLabels.length === 0) return;
+            const showNodeLabels = document.getElementById('toggle-labels').checked;
+            const showElementLabels = document.getElementById('toggle-element-labels').checked;
+            if (nodeLabels.length === 0 && elementLabels.length === 0) return;
 
             const width = VIS_CONTAINER.clientWidth;
             const height = VIS_CONTAINER.clientHeight;
             const widthHalf = width / 2;
             const heightHalf = height / 2;
 
+            // Update node labels
             for (const label of nodeLabels) {
-                if (!showLabels) {
+                if (!showNodeLabels) {
                     label.element.style.display = 'none';
                     continue;
                 }
 
                 const vector = label.position.clone().project(camera);
 
-                // 카메라 뒤에 있는 라벨 숨기기
                 if (vector.z > 1) {
                     label.element.style.display = 'none';
                     continue;
                 }
 
-                // 3D 좌표를 2D 픽셀 좌표로 변환
                 const x = (vector.x * widthHalf) + widthHalf;
                 const y = -(vector.y * heightHalf) + heightHalf;
 
-                // 화면 밖으로 나간 라벨 숨기기 (약간의 여유 포함)
                 if (x < -50 || x > width + 50 || y < -50 || y > height + 50) {
                     label.element.style.display = 'none';
                 } else {
                     label.element.style.display = 'block';
-                    // 라벨의 중심이 (x, y)에 오도록 `translate(-50%, -100%)` 등을 사용할 수 있으나,
-                    // 간단하게 좌상단을 기준으로 위치시킵니다. (성능을 위해)
-                    // 조금 더 정확하게 라벨을 점 위로 옮깁니다.
-                    label.element.style.transform = `translate(${x}px, ${y - 10}px)`; 
+                    label.element.style.transform = `translate(${x}px, ${y - 10}px)`;
+                }
+            }
+
+            // Update element labels
+            for (const label of elementLabels) {
+                if (!showElementLabels) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                const vector = label.position.clone().project(camera);
+
+                if (vector.z > 1) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                const x = (vector.x * widthHalf) + widthHalf;
+                const y = -(vector.y * heightHalf) + heightHalf;
+
+                if (x < -50 || x > width + 50 || y < -50 || y > height + 50) {
+                    label.element.style.display = 'none';
+                } else {
+                    label.element.style.display = 'block';
+                    label.element.style.transform = `translate(${x}px, ${y - 10}px)`;
                 }
             }
         }
@@ -664,9 +713,13 @@
 
             // Toggle Labels Checkbox Event
             toggleLabelsCheckbox.addEventListener('change', () => {
-                // The animate loop will automatically pick up the change,
-                // but we call it once immediately for responsiveness.
-                updateLabels(); 
+                updateLabels();
+            });
+
+            // Toggle Element Labels Checkbox Event
+            const toggleElementLabelsCheckbox = document.getElementById('toggle-element-labels');
+            toggleElementLabelsCheckbox.addEventListener('change', () => {
+                updateLabels();
             });
         });
 

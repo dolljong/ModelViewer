@@ -53,6 +53,17 @@
             white-space: nowrap;
             display: none; /* 체크박스로 토글하기 전까지 숨김 */
         }
+        .section-label {
+            position: absolute;
+            color: #00FF88; /* 녹색 텍스트 */
+            background: rgba(50, 0, 50, 0.5); /* 반투명 보라색 배경 */
+            padding: 1px 3px;
+            font-size: 10px;
+            font-family: monospace;
+            border-radius: 2px;
+            white-space: nowrap;
+            display: none;
+        }
         /* --- Label Styles End --- */
 
         #info-overlay {
@@ -111,6 +122,12 @@
                 <label for="toggle-element-labels" class="ml-2 block text-sm text-gray-900">부재 번호 표시</label>
             </div>
 
+            <!-- Section Label Toggle -->
+            <div class="flex items-center">
+                <input type="checkbox" id="toggle-section-labels" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                <label for="toggle-section-labels" class="ml-2 block text-sm text-gray-900">단면 번호 표시</label>
+            </div>
+
 
             <div id="status-message" class="text-sm mt-2 text-gray-700"></div>
         </div>
@@ -165,6 +182,8 @@
         let nodeLabels = [];
         // Array to store element labels and their 3D positions
         let elementLabels = [];
+        // Array to store section labels and their 3D positions
+        let sectionLabels = [];
 
         // --- MCT 데이터 파싱 함수 (강화된 로직) ---
         function parseMCT(mctText) {
@@ -253,11 +272,12 @@
                 elementLines.forEach(line => {
                     const parts = line.split(',').map(p => p.trim());
                     
-                    if (parts.length >= 6) { 
+                    if (parts.length >= 6) {
                         const iEL = parseInt(parts[0]);
-                        const nodeI = parseInt(parts[4]); 
-                        const nodeJ = parseInt(parts[5]); 
-                        const elementType = parts[1] || "UNKNOWN"; 
+                        const nodeI = parseInt(parts[4]);
+                        const nodeJ = parseInt(parts[5]);
+                        const elementType = parts[1] || "UNKNOWN";
+                        const sectionNum = parseInt(parts[3]) || 0;
 
                         if (firstElementLine === "") {
                             firstElementLine = line;
@@ -269,7 +289,8 @@
                                 iEL,
                                 nodeI,
                                 nodeJ,
-                                type: elementType.trim() 
+                                type: elementType.trim(),
+                                section: sectionNum
                             };
                         }
                     }
@@ -390,6 +411,7 @@
             }
             nodeLabels = [];
             elementLabels = [];
+            sectionLabels = [];
 
             const nodes = data.nodes;
             const elements = data.elements;
@@ -467,6 +489,7 @@
                         nodeI: element.nodeI,
                         nodeJ: element.nodeJ,
                         elementType: element.type,
+                        section: element.section,
                         originalColor: BEAM_COLOR
                     };
                     scene.add(mesh);
@@ -478,6 +501,13 @@
                     elemLabelDiv.textContent = iEL;
                     labelContainer.appendChild(elemLabelDiv);
                     elementLabels.push({ element: elemLabelDiv, position: midPoint });
+
+                    // --- Create Section Label at midpoint ---
+                    const secLabelDiv = document.createElement('div');
+                    secLabelDiv.className = 'section-label';
+                    secLabelDiv.textContent = element.section;
+                    labelContainer.appendChild(secLabelDiv);
+                    sectionLabels.push({ element: secLabelDiv, position: midPoint.clone() });
                 } else {
                     console.warn(`Element ${iEL} skipped: Node ${element.nodeI} or ${element.nodeJ} not found.`);
                 }
@@ -538,7 +568,8 @@
         function updateLabels() {
             const showNodeLabels = document.getElementById('toggle-labels').checked;
             const showElementLabels = document.getElementById('toggle-element-labels').checked;
-            if (nodeLabels.length === 0 && elementLabels.length === 0) return;
+            const showSectionLabels = document.getElementById('toggle-section-labels').checked;
+            if (nodeLabels.length === 0 && elementLabels.length === 0 && sectionLabels.length === 0) return;
 
             const width = VIS_CONTAINER.clientWidth;
             const height = VIS_CONTAINER.clientHeight;
@@ -592,6 +623,31 @@
                 } else {
                     label.element.style.display = 'block';
                     label.element.style.transform = `translate(${x}px, ${y - 10}px)`;
+                }
+            }
+
+            // Update section labels
+            for (const label of sectionLabels) {
+                if (!showSectionLabels) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                const vector = label.position.clone().project(camera);
+
+                if (vector.z > 1) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                const x = (vector.x * widthHalf) + widthHalf;
+                const y = -(vector.y * heightHalf) + heightHalf;
+
+                if (x < -50 || x > width + 50 || y < -50 || y > height + 50) {
+                    label.element.style.display = 'none';
+                } else {
+                    label.element.style.display = 'block';
+                    label.element.style.transform = `translate(${x}px, ${y + 5}px)`;
                 }
             }
         }
@@ -667,7 +723,8 @@
                         infoOverlay.innerHTML = `
                             <strong>Element ID:</strong> ${data.id}<br>
                             <strong>연결 노드:</strong> ${data.nodeI} -> ${data.nodeJ}<br>
-                            <strong>Element Type:</strong> ${data.elementType}
+                            <strong>Element Type:</strong> ${data.elementType}<br>
+                            <strong>단면 번호:</strong> ${data.section}
                         `;
                     }
                 }
@@ -719,6 +776,12 @@
             // Toggle Element Labels Checkbox Event
             const toggleElementLabelsCheckbox = document.getElementById('toggle-element-labels');
             toggleElementLabelsCheckbox.addEventListener('change', () => {
+                updateLabels();
+            });
+
+            // Toggle Section Labels Checkbox Event
+            const toggleSectionLabelsCheckbox = document.getElementById('toggle-section-labels');
+            toggleSectionLabelsCheckbox.addEventListener('change', () => {
                 updateLabels();
             });
         });

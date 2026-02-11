@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDAS 구조물 3D 시각화 (입력 기반)</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for camera interaction -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        #app-header { flex-shrink: 0; padding: 1rem; background-color: #1f2937; color: white; border-bottom: 2px solid #374151; }
+        #main-content { display: flex; flex-grow: 1; min-height: 0; }
+        #input-panel { flex-basis: 350px; flex-shrink: 0; padding: 1rem; background-color: #f3f4f6; overflow-y: auto; }
+        #visualization-container { flex-grow: 1; position: relative; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #mct-input { height: 300px; resize: vertical; min-height: 150px; font-family: monospace; font-size: 10px; }
+        
+        /* --- Label Styles Start --- */
+        #label-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 캔버스 클릭/패닝이 가능하도록 이벤트 통과 */
+            overflow: hidden;
+            z-index: 90;
+        }
+        .node-label {
+            position: absolute;
+            color: #FFF; /* 흰색 텍스트 */
+            background: rgba(0, 0, 0, 0.4); /* 반투명 검은색 배경 */
+            padding: 1px 3px;
+            font-size: 10px;
+            font-family: monospace;
+            border-radius: 2px;
+            /* transform: translate(-50%, -50%); /* JS에서 위치를 계산하여 중앙 정렬 */
+            white-space: nowrap;
+            display: none; /* 체크박스로 토글하기 전까지 숨김 */
+        }
+        /* --- Label Styles End --- */
+
+        #info-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 8px;
+            max-width: 300px;
+            opacity: 0;
+            pointer-events: none;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            z-index: 100;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            font-size: 12px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <header id="app-header" class="text-xl font-bold rounded-b-lg">
+        MIDAS 구조물 3D 시각화기
+    </header>
+    
+    <div id="main-content">
+        <!-- Input Panel -->
+        <div id="input-panel" class="space-y-4">
+            <h2 class="text-lg font-semibold">MCT 데이터 입력</h2>
+            <textarea id="mct-input" class="w-full border border-gray-300 p-2 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="여기에 MCT 파일 내용을 붙여넣으세요 (*NODE 및 *ELEMENT 섹션 필수)"></textarea>
+            
+            <button id="load-button" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition duration-150">
+                3D 모델 로드 및 시각화
+            </button>
+
+            <!-- Node Label Toggle -->
+            <div class="flex items-center">
+                <input type="checkbox" id="toggle-labels" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                <label for="toggle-labels" class="ml-2 block text-sm text-gray-900">노드 번호 표시</label>
+            </div>
+            <p class="text-xs text-gray-500 -mt-2">참고: 노드 수가 많으면 성능이 저하될 수 있습니다.</p>
+
+
+            <div id="status-message" class="text-sm mt-2 text-gray-700"></div>
+        </div>
+
+        <!-- Visualization Container -->
+        <div id="visualization-container">
+            <!-- Container for persistent node labels -->
+            <div id="label-container"></div>
+
+            <!-- Container for hover info -->
+            <div id="info-overlay"></div>
+            
+            <div id="instructions">
+                <p><strong>상호작용 가이드:</strong></p>
+                <ul class="list-disc list-inside ml-2">
+                    <li>마우스 좌클릭 + 드래그: 회전</li>
+                    <li>마우스 우클릭 + 드래그 (또는 Alt/Ctrl + 좌클릭): 이동 (패닝)</li>
+                    <li>마우스 휠: 확대/축소 (Zoom)</li>
+                    <li>마우스 커서를 노드/요소 위에 올리면 정보 표시</li>
+                </ul>
+                <p class="mt-2 text-xs font-bold text-red-500">
+                    좌표계: X-축(종방향), Y-축(수직), Z-축(횡방향)
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Three.js Global Variables
+        let scene, camera, renderer, controls, raycaster, mouse;
+        let INTERSECTED = null;
+        let nodesPoints = null; 
+        const INFO_OVERLAY = document.getElementById('info-overlay');
+        const VIS_CONTAINER = document.getElementById('visualization-container');
+        const STATUS_MESSAGE = document.getElementById('status-message');
+        const LABEL_CONTAINER = document.getElementById('label-container'); // Label container
+        
+        // Node and Element Visual Properties
+        const NODE_SIZE = 5; 
+        const BEAM_RADIUS = 0.05; 
+        const NODE_COLOR = 0xff0000; 
+        const BEAM_COLOR = 0x0000ff; 
+        const HIGHLIGHT_COLOR = 0xffff00; 
+
+        let globalNodesData = {};
+        
+        // Debugging variables moved to global scope
+        let firstElementLine = "";
+        let firstElementParsingResult = null;
+        
+        // Array to store node labels and their 3D positions
+        let nodeLabels = [];
+
+        // --- MCT 데이터 파싱 함수 (강화된 로직) ---
+        function parseMCT(mctText) {
+            const nodes = {};
+            const elements = {};
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+            
+            // Reset global debug variables
+            firstElementLine = "";
+            firstElementParsingResult = null;
+
+            // 1. MCT 텍스트를 라인별로 분리하고, 주석을 제거하며 공백 정리
+            const allLines = mctText.split('\n')
+                .map(line => {
+                    const commentIndex = line.indexOf(';');
+                    return (commentIndex !== -1 ? line.substring(0, commentIndex) : line).trim();
+                })
+                .filter(line => line.length > 0);
+
+            // 2. 파싱할 섹션 키워드 및 종료 키워드 정의
+            const SECTION_KEYWORDS = ["*NODE", "*ELEMENT"];
+            // *ELEMENT 섹션을 종료시키는 키워드 목록
+            const TERMINATION_KEYWORDS = [
+                "*MATERIAL", "*SECT-PSCVALUE", "*SECTION", "*CONSTRAINT", 
+                "*ELASTICLINK", "*RIGIDLINK", "*LOADTOMASS", "*EIGEN-CTRL", 
+                "*USE-STLD", "*SFUNCTION", "*SPLDCASE", "*ENDDATA"
+            ];
+
+            // 3. 섹션 인덱스 찾기
+            let nodeStartIndex = -1, elementStartIndex = -1, elementEndIndex = -1;
+
+            allLines.forEach((line, index) => {
+                const upperLine = line.toUpperCase();
+                if (upperLine === "*NODE") {
+                    nodeStartIndex = index + 1;
+                } else if (upperLine === "*ELEMENT") {
+                    elementStartIndex = index + 1;
+                } else if (elementStartIndex > -1 && elementEndIndex === -1 && TERMINATION_KEYWORDS.includes(upperLine)) {
+                    elementEndIndex = index;
+                }
+            });
+
+            // *ELEMENT 섹션이 끝까지 계속될 경우 (파일 끝)
+            if (elementStartIndex > -1 && elementEndIndex === -1) {
+                elementEndIndex = allLines.length;
+            }
+
+            // --- 4. Node 파싱 ---
+            if (nodeStartIndex === -1) {
+                throw new Error("MCT 파일에서 *NODE 섹션을 찾을 수 없습니다.");
+            }
+            
+            let nodeEndIndex = (elementStartIndex > -1) ? elementStartIndex - 1 : allLines.length;
+            const nodeLines = allLines.slice(nodeStartIndex, nodeEndIndex);
+
+            nodeLines.forEach(line => {
+                const parts = line.split(',').map(p => p.trim()).filter(p => p !== '');
+                if (parts.length >= 4) {
+                    const iNO = parseInt(parts[0]);
+                    const X = parseFloat(parts[1]);
+                    const Y = parseFloat(parts[2]);
+                    const Z = parseFloat(parts[3]);
+
+                    if (!isNaN(iNO) && !isNaN(X) && !isNaN(Y) && !isNaN(Z)) {
+                        nodes[iNO] = { X, Y, Z, iNO };
+                        minX = Math.min(minX, X); maxX = Math.max(maxX, X);
+                        minY = Math.min(minY, Y); maxY = Math.max(maxY, Y);
+                        minZ = Math.min(minZ, Z); maxZ = Math.max(maxZ, Z);
+                    }
+                }
+            });
+
+            globalNodesData = nodes;
+
+            if (Object.keys(nodes).length === 0) {
+                 throw new Error("파싱된 유효한 노드 데이터가 없습니다.");
+            }
+
+            // --- 5. Element 파싱 ---
+            if (elementStartIndex === -1) {
+                console.warn("MCT 파일에서 *ELEMENT 섹션을 찾지 못했습니다.");
+            } else {
+                const elementLines = allLines.slice(elementStartIndex, elementEndIndex);
+                
+                elementLines.forEach(line => {
+                    const parts = line.split(',').map(p => p.trim());
+                    
+                    if (parts.length >= 6) { 
+                        const iEL = parseInt(parts[0]);
+                        const nodeI = parseInt(parts[4]); 
+                        const nodeJ = parseInt(parts[5]); 
+                        const elementType = parts[1] || "UNKNOWN"; 
+
+                        if (firstElementLine === "") {
+                            firstElementLine = line;
+                            firstElementParsingResult = { iEL, elementType, nodeI, nodeJ };
+                        }
+
+                        if (!isNaN(iEL) && !isNaN(nodeI) && !isNaN(nodeJ) && globalNodesData[nodeI] && globalNodesData[nodeJ]) {
+                            elements[iEL] = {
+                                iEL,
+                                nodeI,
+                                nodeJ,
+                                type: elementType.trim() 
+                            };
+                        }
+                    }
+                });
+            }
+            
+            console.log("--- Element Parsing Debug Info ---");
+            console.log("First Element Line Found:", firstElementLine);
+            console.log("Parsing Result (First Elem):", firstElementParsingResult);
+            
+            return { nodes, elements, bounds: { minX, maxX, minY, maxY, minZ, maxZ } };
+        }
+
+        // 2. 3D Scene Initialization Function
+        function initScene() {
+            while(VIS_CONTAINER.firstChild) {
+                if (VIS_CONTAINER.firstChild.tagName === 'CANVAS') {
+                    if (controls) controls.dispose();
+                    renderer.dispose();
+                }
+                VIS_CONTAINER.removeChild(VIS_CONTAINER.firstChild);
+            }
+
+            // Re-create label container
+            const labelContainer = document.createElement('div');
+            labelContainer.id = 'label-container';
+            VIS_CONTAINER.appendChild(labelContainer);
+            // Re-create info overlay
+            const infoOverlay = document.createElement('div');
+            infoOverlay.id = 'info-overlay';
+            VIS_CONTAINER.appendChild(infoOverlay);
+            // Re-create instructions
+            const instructions = document.createElement('div');
+            instructions.id = 'instructions';
+            instructions.innerHTML = `
+                <p><strong>상호작용 가이드:</strong></p>
+                <ul class="list-disc list-inside ml-2">
+                    <li>마우스 좌클릭 + 드래그: 회전</li>
+                    <li>마우스 우클릭 + 드래그 (또는 Alt/Ctrl + 좌클릭): 이동 (패닝)</li>
+                    <li>마우스 휠: 확대/축소 (Zoom)</li>
+                    <li>마우스 커서를 노드/요소 위에 올리면 정보 표시</li>
+                </ul>
+                <p class="mt-2 text-xs font-bold text-red-500">
+                    좌표계: X-축(종방향), Y-축(수직), Z-축(횡방향)
+                </p>`;
+            VIS_CONTAINER.appendChild(instructions);
+
+            // Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222); 
+            
+            // Camera Setup
+            const aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
+            camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 10000);
+            camera.position.set(100, 50, 100);
+
+            // Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(VIS_CONTAINER.clientWidth, VIS_CONTAINER.clientHeight);
+            // Insert canvas as the *first* child, so labels overlay it
+            VIS_CONTAINER.prepend(renderer.domElement);
+            
+            // Controls Setup
+            if (typeof THREE.OrbitControls !== 'undefined') {
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.mouseButtons = {
+                    LEFT: THREE.MOUSE.ROTATE,
+                    MIDDLE: THREE.MOUSE.DOLLY,
+                    RIGHT: THREE.MOUSE.PAN
+                };
+            } else {
+                console.error("OrbitControls failed to load.");
+            }
+
+            // Lighting Setup
+            const ambientLight = new THREE.AmbientLight(0x606060);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(200, 300, 100); 
+            scene.add(directionalLight);
+            
+            // Raycaster and Mouse Vector Initialization
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            renderer.domElement.addEventListener('mousemove', onMouseMove, false);
+        }
+
+        // 3. Structure Visualization Function
+        function visualizeStructure(data) {
+            // Clear existing objects but keep lights
+            if (scene) {
+                const childrenToRemove = scene.children.filter(child => child.isMesh || child.isPoints || child.isLine);
+                childrenToRemove.forEach(child => {
+                    scene.remove(child);
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(material => material.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
+                    }
+                });
+            } else {
+                initScene();
+            }
+
+            // Clear previous labels
+            const labelContainer = document.getElementById('label-container');
+            if (labelContainer) {
+                labelContainer.innerHTML = '';
+            }
+            nodeLabels = [];
+
+            const nodes = data.nodes;
+            const elements = data.elements;
+            const bounds = data.bounds;
+            
+            // Calculate 3D Model Center
+            const center = new THREE.Vector3(
+                (bounds.minX + bounds.maxX) / 2, 
+                (bounds.minZ + bounds.maxZ) / 2, // Three.js Y (수직)
+                (bounds.minY + bounds.maxY) / 2  // Three.js Z (횡방향)
+            );
+            
+            // 3.1. Create Nodes (Points - Relative Size)
+            const nodeMaterial = new THREE.PointsMaterial({ 
+                color: NODE_COLOR, 
+                size: NODE_SIZE, 
+                sizeAttenuation: false, 
+                depthTest: false,
+                transparent: true
+            });
+            
+            const nodePositions = [];
+            const nodeIds = []; 
+
+            for (const iNO in nodes) {
+                const node = nodes[iNO];
+                // Coordinate transformation
+                nodePositions.push(node.X, node.Z, node.Y);
+                nodeIds.push(node.iNO); 
+                
+                // --- Create DOM Label ---
+                const labelDiv = document.createElement('div');
+                labelDiv.className = 'node-label';
+                labelDiv.textContent = iNO;
+                labelContainer.appendChild(labelDiv);
+                
+                // Store label and its 3D position (Three.js coordinates)
+                const position = new THREE.Vector3(node.X, node.Z, node.Y);
+                nodeLabels.push({ element: labelDiv, position: position });
+            }
+            
+            const nodeGeometry = new THREE.BufferGeometry();
+            nodeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(nodePositions, 3));
+            
+            nodesPoints = new THREE.Points(nodeGeometry, nodeMaterial);
+            nodesPoints.userData = { ids: nodeIds, type: 'NodesGroup' }; 
+            nodesPoints.renderOrder = 1; 
+            scene.add(nodesPoints);
+
+
+            // 3.2. Create Elements (Thin Cylinders - Mesh)
+            const beamMaterial = new THREE.MeshBasicMaterial({ color: BEAM_COLOR });
+
+            for (const iEL in elements) {
+                const element = elements[iEL];
+                const posI = nodes[element.nodeI];
+                const posJ = nodes[element.nodeJ];
+
+                if (posI && posJ) {
+                    const startPoint = new THREE.Vector3(posI.X, posI.Z, posI.Y);
+                    const endPoint = new THREE.Vector3(posJ.X, posJ.Z, posJ.Y);
+                    const direction = new THREE.Vector3().subVectors(endPoint, startPoint);
+                    const length = direction.length();
+                    direction.normalize();
+                    const elementRadius = BEAM_RADIUS;
+                    const geometry = new THREE.CylinderGeometry(elementRadius, elementRadius, length, 8);
+                    const mesh = new THREE.Mesh(geometry, beamMaterial.clone());
+                    mesh.position.copy(startPoint).add(direction.clone().multiplyScalar(length / 2));
+                    const axis = new THREE.Vector3(0, 1, 0); 
+                    mesh.quaternion.setFromUnitVectors(axis, direction);
+
+                    mesh.userData = { 
+                        id: iEL, 
+                        type: 'Element', 
+                        nodeI: element.nodeI, 
+                        nodeJ: element.nodeJ,
+                        elementType: element.type,
+                        originalColor: BEAM_COLOR
+                    };
+                    scene.add(mesh);
+                } else {
+                    console.warn(`Element ${iEL} skipped: Node ${element.nodeI} or ${element.nodeJ} not found.`);
+                }
+            }
+
+            // 3.3. Adjust Camera and Controls
+            if (controls) {
+                const sizeX = bounds.maxX - bounds.minX;
+                const sizeY = bounds.maxZ - bounds.minZ; // MCT Z (수직)
+                const sizeZ = bounds.maxY - bounds.minY; // MCT Y (횡방향)
+                const maxSize = Math.max(sizeX, sizeY, sizeZ);
+                const distance = maxSize * 1.5 || 100; 
+
+                camera.position.set(center.x + distance, center.y + distance / 2, center.z + distance);
+                controls.target.copy(center);
+                
+                camera.near = distance / 100;
+                camera.far = distance * 10;
+                camera.updateProjectionMatrix();
+
+                controls.update();
+            }
+
+            // Update Status Message
+            const numElements = Object.keys(elements).length;
+            const numNodes = Object.keys(nodes).length;
+
+            const firstElemResult = firstElementParsingResult ? ` | 첫 요소 파싱: [${firstElementLine}] -> ID: ${firstElementParsingResult.iEL}, N1: ${firstElementParsingResult.nodeI}, N2: ${firstElementParsingResult.nodeJ}` : " | (파싱된 요소 없음)";
+            const debugInfo = `로드 성공! 노드: ${numNodes}개, 요소: ${numElements}개` + firstElemResult;
+
+            STATUS_MESSAGE.textContent = debugInfo;
+            console.log("Full Debug Info:", debugInfo);
+            
+            if (numElements === 0 && numNodes > 0) {
+                 STATUS_MESSAGE.className = 'text-sm mt-2 text-orange-400 font-semibold';
+            } else if (numElements === 0 && numNodes === 0) {
+                 STATUS_MESSAGE.textContent = `오류: 파싱된 노드/요소 데이터가 없습니다. 입력 데이터를 확인해주세요.`;
+                 STATUS_MESSAGE.className = 'text-sm mt-2 text-red-600 font-semibold';
+            } else {
+                 STATUS_MESSAGE.className = 'text-sm mt-2 text-green-600 font-semibold';
+            }
+        }
+        
+        // 4. Animation/Rendering Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            
+            // Update labels on every frame
+            updateLabels();
+
+            if (renderer && scene && camera) {
+                renderer.render(scene, camera);
+            }
+        }
+
+        // --- New Function: Update Labels ---
+        function updateLabels() {
+            const showLabels = document.getElementById('toggle-labels').checked;
+            if (nodeLabels.length === 0) return;
+
+            const width = VIS_CONTAINER.clientWidth;
+            const height = VIS_CONTAINER.clientHeight;
+            const widthHalf = width / 2;
+            const heightHalf = height / 2;
+
+            for (const label of nodeLabels) {
+                if (!showLabels) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                const vector = label.position.clone().project(camera);
+
+                // 카메라 뒤에 있는 라벨 숨기기
+                if (vector.z > 1) {
+                    label.element.style.display = 'none';
+                    continue;
+                }
+
+                // 3D 좌표를 2D 픽셀 좌표로 변환
+                const x = (vector.x * widthHalf) + widthHalf;
+                const y = -(vector.y * heightHalf) + heightHalf;
+
+                // 화면 밖으로 나간 라벨 숨기기 (약간의 여유 포함)
+                if (x < -50 || x > width + 50 || y < -50 || y > height + 50) {
+                    label.element.style.display = 'none';
+                } else {
+                    label.element.style.display = 'block';
+                    // 라벨의 중심이 (x, y)에 오도록 `translate(-50%, -100%)` 등을 사용할 수 있으나,
+                    // 간단하게 좌상단을 기준으로 위치시킵니다. (성능을 위해)
+                    // 조금 더 정확하게 라벨을 점 위로 옮깁니다.
+                    label.element.style.transform = `translate(${x}px, ${y - 10}px)`; 
+                }
+            }
+        }
+        
+        // 5. Mouse Interaction (Raycasting)
+        function onMouseMove(event) {
+            if (!renderer || !raycaster) return;
+            
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            
+            checkIntersection();
+        }
+
+        // 6. Check Object Intersection
+        function checkIntersection() {
+            if (!raycaster || !scene || !camera) return;
+
+            raycaster.setFromCamera(mouse, camera);
+            
+            raycaster.params.Points.threshold = NODE_SIZE / (window.innerHeight / 2);
+
+            const intersectableObjects = scene.children.filter(obj => obj.isPoints || (obj.isMesh && obj.userData.type === 'Element'));
+            const intersects = raycaster.intersectObjects(intersectableObjects, false);
+            
+            const infoOverlay = document.getElementById('info-overlay'); // Get overlay element again
+
+            // Restore previous intersected object color
+            if (INTERSECTED) {
+                if (INTERSECTED.isMesh) { 
+                    INTERSECTED.material.color.set(BEAM_COLOR);
+                } else if (INTERSECTED.isPoints) { 
+                    INTERSECTED.material.color.set(NODE_COLOR);
+                }
+                INTERSECTED.material.needsUpdate = true;
+                INTERSECTED = null;
+                if (infoOverlay) infoOverlay.style.opacity = 0;
+            }
+
+
+            if (intersects.length > 0) {
+                let object = intersects[0].object;
+                let index = intersects[0].index;
+
+                // Node Point Group
+                if (object.isPoints && object.userData.type === 'NodesGroup' && index !== undefined) {
+                    INTERSECTED = object; 
+                    object.material.color.set(HIGHLIGHT_COLOR); 
+                    object.material.needsUpdate = true;
+                    
+                    const nodeId = object.userData.ids[index];
+                    const node = globalNodesData[nodeId];
+
+                    if (node && infoOverlay) {
+                        infoOverlay.style.opacity = 1;
+                        infoOverlay.innerHTML = `
+                            <strong>Node ID:</strong> ${nodeId}<br>
+                            <strong>MCT 좌표 (X, Y, Z):</strong> ${node.X.toFixed(2)}, ${node.Y.toFixed(2)}, ${node.Z.toFixed(2)}
+                        `;
+                    }
+                } 
+                // Element Mesh (Cylinder)
+                else if (object.isMesh && object.userData.type === 'Element') {
+                    INTERSECTED = object;
+                    INTERSECTED.material.color.set(HIGHLIGHT_COLOR);
+                    INTERSECTED.material.needsUpdate = true;
+
+                    if (infoOverlay) {
+                        infoOverlay.style.opacity = 1;
+                        const data = INTERSECTED.userData;
+                        
+                        infoOverlay.innerHTML = `
+                            <strong>Element ID:</strong> ${data.id}<br>
+                            <strong>연결 노드:</strong> ${data.nodeI} -> ${data.nodeJ}<br>
+                            <strong>Element Type:</strong> ${data.elementType}
+                        `;
+                    }
+                }
+            } 
+        }
+
+        // 7. Window Resize Handler
+        function onWindowResize() {
+            if (camera && renderer && VIS_CONTAINER) {
+                camera.aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(VIS_CONTAINER.clientWidth, VIS_CONTAINER.clientHeight);
+            }
+        }
+        
+        // 8. DOM Content Loaded Event Handler
+        document.addEventListener('DOMContentLoaded', () => {
+            const loadButton = document.getElementById('load-button');
+            const mctInput = document.getElementById('mct-input');
+            const toggleLabelsCheckbox = document.getElementById('toggle-labels');
+
+            initScene();
+            animate();
+
+            // Load Button Click Event
+            loadButton.addEventListener('click', () => {
+                const rawData = mctInput.value;
+                STATUS_MESSAGE.className = 'text-sm mt-2 text-gray-700';
+                STATUS_MESSAGE.textContent = '데이터 로드 중...';
+                
+                setTimeout(() => {
+                    try {
+                        const data = parseMCT(rawData);
+                        visualizeStructure(data);
+                        
+                    } catch (error) {
+                        STATUS_MESSAGE.className = 'text-sm mt-2 text-red-600 font-semibold';
+                        STATUS_MESSAGE.textContent = `오류: ${error.message}. 데이터를 확인해주세요.`;
+                        console.error("Visualization Error:", error);
+                    }
+                }, 10); 
+            });
+
+            // Toggle Labels Checkbox Event
+            toggleLabelsCheckbox.addEventListener('change', () => {
+                // The animate loop will automatically pick up the change,
+                // but we call it once immediately for responsiveness.
+                updateLabels(); 
+            });
+        });
+
+    </script>
+</body>
+</html>

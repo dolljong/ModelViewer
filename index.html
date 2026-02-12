@@ -80,6 +80,14 @@
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             z-index: 100;
         }
+        #zoom-selection-rect {
+            position: absolute;
+            border: 2px dashed #00aaff;
+            background: rgba(0, 170, 255, 0.1);
+            pointer-events: none;
+            z-index: 95;
+            display: none;
+        }
         #instructions {
             position: absolute;
             bottom: 10px;
@@ -103,11 +111,43 @@
         <!-- Input Panel -->
         <div id="input-panel" class="space-y-4">
             <h2 class="text-lg font-semibold">MCT 데이터 입력</h2>
+
+            <!-- Theme Toggle -->
+            <div class="flex items-center justify-between">
+                <label for="theme-select" class="text-sm font-medium">테마 모드:</label>
+                <select id="theme-select" class="border border-gray-300 rounded-md px-2 py-1 text-sm focus:ring-blue-500 focus:border-blue-500">
+                    <option value="dark">다크 모드</option>
+                    <option value="light">라이트 모드</option>
+                </select>
+            </div>
+
             <textarea id="mct-input" class="w-full border border-gray-300 p-2 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="여기에 MCT 파일 내용을 붙여넣으세요 (*NODE 및 *ELEMENT 섹션 필수)"></textarea>
-            
-            <button id="load-button" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition duration-150">
-                3D 모델 로드 및 시각화
-            </button>
+
+            <div class="flex gap-2">
+                <button id="load-button" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition duration-150">
+                    3D 모델 로드
+                </button>
+                <button id="file-open-button" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition duration-150">
+                    파일 열기
+                </button>
+            </div>
+            <input type="file" id="file-input" accept=".mct,.txt" class="hidden">
+
+            <!-- View Controls -->
+            <div class="flex gap-2">
+                <button id="btn-fit-all" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm transition duration-150">
+                    전체 보기
+                </button>
+                <button id="btn-window-zoom" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm transition duration-150">
+                    윈도우 줌
+                </button>
+            </div>
+
+            <!-- Perspective Toggle -->
+            <div class="flex items-center">
+                <input type="checkbox" id="toggle-perspective" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                <label for="toggle-perspective" class="ml-2 block text-sm text-gray-900">원근 투영 (Perspective)</label>
+            </div>
 
             <!-- Node Label Toggle -->
             <div class="flex items-center">
@@ -140,6 +180,8 @@
             <!-- Container for hover info -->
             <div id="info-overlay"></div>
             
+            <div id="zoom-selection-rect"></div>
+
             <div id="instructions">
                 <p><strong>상호작용 가이드:</strong></p>
                 <ul class="list-disc list-inside ml-2">
@@ -149,7 +191,7 @@
                     <li>마우스 커서를 노드/요소 위에 올리면 정보 표시</li>
                 </ul>
                 <p class="mt-2 text-xs font-bold text-red-500">
-                    좌표계: X-축(종방향), Y-축(수직), Z-축(횡방향)
+                    좌표계: X-축(종방향), Y-축(횡방향), Z-축(수직)
                 </p>
             </div>
         </div>
@@ -167,7 +209,7 @@
         
         // Node and Element Visual Properties
         const NODE_SIZE = 5; 
-        const BEAM_RADIUS = 0.05; 
+        let BEAM_RADIUS = 0.05;
         const NODE_COLOR = 0xff0000; 
         const BEAM_COLOR = 0x0000ff; 
         const HIGHLIGHT_COLOR = 0xffff00; 
@@ -185,6 +227,91 @@
         // Array to store section labels and their 3D positions
         let sectionLabels = [];
 
+        // Global bounds for fitAll
+        let globalBounds = null;
+
+        // Axis helper
+        let axisScene, axisCamera;
+
+        // Window zoom state
+        let windowZoomActive = false;
+        let zoomDragStart = null;
+
+        // --- Theme Configuration (Graphics area only) ---
+        const THEMES = {
+            dark: {
+                sceneBackground: 0x222222,
+                instructionsBg: 'rgba(0,0,0,0.8)',
+                instructionsText: '#ffffff',
+                infoBg: 'rgba(0,0,0,0.7)',
+                infoText: '#ffffff',
+                nodeLabelBg: 'rgba(0, 0, 0, 0.4)',
+                nodeLabelText: '#FFF',
+                elementLabelBg: 'rgba(0, 0, 50, 0.5)',
+                elementLabelText: '#FFD700',
+                sectionLabelBg: 'rgba(50, 0, 50, 0.5)',
+                sectionLabelText: '#00FF88',
+            },
+            light: {
+                sceneBackground: 0xffffff,
+                instructionsBg: 'rgba(255,255,255,0.9)',
+                instructionsText: '#333333',
+                infoBg: 'rgba(255,255,255,0.85)',
+                infoText: '#111827',
+                nodeLabelBg: 'rgba(255, 255, 255, 0.8)',
+                nodeLabelText: '#111827',
+                elementLabelBg: 'rgba(255, 255, 200, 0.85)',
+                elementLabelText: '#92400e',
+                sectionLabelBg: 'rgba(220, 255, 240, 0.85)',
+                sectionLabelText: '#065f46',
+            }
+        };
+
+        function applyTheme(mode) {
+            const theme = THEMES[mode];
+            if (!theme) return;
+
+            // 3D scene background
+            if (scene) {
+                scene.background = new THREE.Color(theme.sceneBackground);
+            }
+
+            // Instructions panel
+            const instructions = document.getElementById('instructions');
+            if (instructions) {
+                instructions.style.background = theme.instructionsBg;
+                instructions.style.color = theme.instructionsText;
+            }
+
+            // Info overlay
+            const infoOverlay = document.getElementById('info-overlay');
+            if (infoOverlay) {
+                infoOverlay.style.background = theme.infoBg;
+                infoOverlay.style.color = theme.infoText;
+            }
+
+            // Node labels
+            document.querySelectorAll('.node-label').forEach(el => {
+                el.style.background = theme.nodeLabelBg;
+                el.style.color = theme.nodeLabelText;
+            });
+
+            // Element labels
+            document.querySelectorAll('.element-label').forEach(el => {
+                el.style.background = theme.elementLabelBg;
+                el.style.color = theme.elementLabelText;
+            });
+
+            // Section labels
+            document.querySelectorAll('.section-label').forEach(el => {
+                el.style.background = theme.sectionLabelBg;
+                el.style.color = theme.sectionLabelText;
+            });
+
+            // Save to localStorage
+            localStorage.setItem('modelviewer-theme', mode);
+        }
+
         // --- MCT 데이터 파싱 함수 (강화된 로직) ---
         function parseMCT(mctText) {
             const nodes = {};
@@ -195,6 +322,27 @@
             // Reset global debug variables
             firstElementLine = "";
             firstElementParsingResult = null;
+            let lengthUnit = "M"; // 기본값
+
+            // 0. *UNIT 파싱 (주석 제거 전 원본에서)
+            const rawLines = mctText.split('\n');
+            for (let i = 0; i < rawLines.length; i++) {
+                const trimmed = rawLines[i].replace(/;.*/, '').trim();
+                if (trimmed.toUpperCase() === '*UNIT') {
+                    // 다음 데이터 라인에서 단위 읽기 (FORCE, LENGTH, HEAT, TEMPER 순)
+                    for (let j = i + 1; j < rawLines.length; j++) {
+                        const dataLine = rawLines[j].replace(/;.*/, '').trim();
+                        if (dataLine.length === 0) continue;
+                        if (dataLine.startsWith('*')) break;
+                        const parts = dataLine.split(',').map(p => p.trim().toUpperCase());
+                        if (parts.length >= 2) {
+                            lengthUnit = parts[1]; // 두 번째가 LENGTH 단위
+                        }
+                        break;
+                    }
+                    break;
+                }
+            }
 
             // 1. MCT 텍스트를 라인별로 분리하고, 주석을 제거하며 공백 정리
             const allLines = mctText.split('\n')
@@ -301,7 +449,7 @@
             console.log("First Element Line Found:", firstElementLine);
             console.log("Parsing Result (First Elem):", firstElementParsingResult);
             
-            return { nodes, elements, bounds: { minX, maxX, minY, maxY, minZ, maxZ } };
+            return { nodes, elements, bounds: { minX, maxX, minY, maxY, minZ, maxZ }, lengthUnit };
         }
 
         // 2. 3D Scene Initialization Function
@@ -334,18 +482,30 @@
                     <li>마우스 커서를 노드/요소 위에 올리면 정보 표시</li>
                 </ul>
                 <p class="mt-2 text-xs font-bold text-red-500">
-                    좌표계: X-축(종방향), Y-축(수직), Z-축(횡방향)
+                    좌표계: X-축(종방향), Y-축(횡방향), Z-축(수직)
                 </p>`;
             VIS_CONTAINER.appendChild(instructions);
 
+            // Re-create zoom selection rectangle
+            const zoomRect = document.createElement('div');
+            zoomRect.id = 'zoom-selection-rect';
+            VIS_CONTAINER.appendChild(zoomRect);
+
             // Scene Setup
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x222222); 
+            const savedTheme = localStorage.getItem('modelviewer-theme') || 'dark';
+            scene.background = new THREE.Color(THEMES[savedTheme].sceneBackground);
             
-            // Camera Setup
+            // Camera Setup (Orthographic by default)
             const aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
-            camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 10000);
-            camera.position.set(100, 50, 100);
+            const defaultSize = 100;
+            camera = new THREE.OrthographicCamera(
+                -defaultSize * aspect, defaultSize * aspect,
+                defaultSize, -defaultSize,
+                0.1, 100000
+            );
+            camera.up.set(0, 0, 1); // Z-up
+            camera.position.set(-100, -100, 50);
 
             // Renderer Setup
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -416,12 +576,20 @@
             const nodes = data.nodes;
             const elements = data.elements;
             const bounds = data.bounds;
-            
+            globalBounds = bounds;
+
+            // 단위에 따른 부재 굵기 조절
+            const sizeX = bounds.maxX - bounds.minX;
+            const sizeY = bounds.maxY - bounds.minY;
+            const sizeZ = bounds.maxZ - bounds.minZ;
+            const maxSpan = Math.max(sizeX, sizeY, sizeZ) || 1;
+            BEAM_RADIUS = maxSpan * 0.001; // 모델 크기의 0.1%
+
             // Calculate 3D Model Center
             const center = new THREE.Vector3(
-                (bounds.minX + bounds.maxX) / 2, 
-                (bounds.minZ + bounds.maxZ) / 2, // Three.js Y (수직)
-                (bounds.minY + bounds.maxY) / 2  // Three.js Z (횡방향)
+                (bounds.minX + bounds.maxX) / 2,
+                (bounds.minY + bounds.maxY) / 2,
+                (bounds.minZ + bounds.maxZ) / 2
             );
             
             // 3.1. Create Nodes (Points - Relative Size)
@@ -439,7 +607,7 @@
             for (const iNO in nodes) {
                 const node = nodes[iNO];
                 // Coordinate transformation
-                nodePositions.push(node.X, node.Z, node.Y);
+                nodePositions.push(node.X, node.Y, node.Z);
                 nodeIds.push(node.iNO); 
                 
                 // --- Create DOM Label ---
@@ -449,7 +617,7 @@
                 labelContainer.appendChild(labelDiv);
                 
                 // Store label and its 3D position (Three.js coordinates)
-                const position = new THREE.Vector3(node.X, node.Z, node.Y);
+                const position = new THREE.Vector3(node.X, node.Y, node.Z);
                 nodeLabels.push({ element: labelDiv, position: position });
             }
             
@@ -471,8 +639,8 @@
                 const posJ = nodes[element.nodeJ];
 
                 if (posI && posJ) {
-                    const startPoint = new THREE.Vector3(posI.X, posI.Z, posI.Y);
-                    const endPoint = new THREE.Vector3(posJ.X, posJ.Z, posJ.Y);
+                    const startPoint = new THREE.Vector3(posI.X, posI.Y, posI.Z);
+                    const endPoint = new THREE.Vector3(posJ.X, posJ.Y, posJ.Z);
                     const direction = new THREE.Vector3().subVectors(endPoint, startPoint);
                     const length = direction.length();
                     direction.normalize();
@@ -516,12 +684,12 @@
             // 3.3. Adjust Camera and Controls
             if (controls) {
                 const sizeX = bounds.maxX - bounds.minX;
-                const sizeY = bounds.maxZ - bounds.minZ; // MCT Z (수직)
-                const sizeZ = bounds.maxY - bounds.minY; // MCT Y (횡방향)
+                const sizeY = bounds.maxY - bounds.minY;
+                const sizeZ = bounds.maxZ - bounds.minZ;
                 const maxSize = Math.max(sizeX, sizeY, sizeZ);
-                const distance = maxSize * 1.5 || 100; 
+                const distance = maxSize * 1.5 || 100;
 
-                camera.position.set(center.x + distance, center.y + distance / 2, center.z + distance);
+                camera.position.set(center.x - distance, center.y - distance, center.z + distance / 2);
                 controls.target.copy(center);
                 
                 camera.near = distance / 100;
@@ -540,7 +708,11 @@
 
             STATUS_MESSAGE.textContent = debugInfo;
             console.log("Full Debug Info:", debugInfo);
-            
+
+            // Re-apply current theme after DOM elements are recreated
+            const currentTheme = document.getElementById('theme-select').value;
+            applyTheme(currentTheme);
+
             if (numElements === 0 && numNodes > 0) {
                  STATUS_MESSAGE.className = 'text-sm mt-2 text-orange-400 font-semibold';
             } else if (numElements === 0 && numNodes === 0) {
@@ -551,16 +723,110 @@
             }
         }
         
+        // --- Axis Helper (좌표축 아이콘) ---
+        function initAxisHelper() {
+            axisScene = new THREE.Scene();
+            axisCamera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0.1, 10);
+            axisCamera.position.set(0, 0, 4);
+            axisCamera.lookAt(0, 0, 0);
+
+            const axisLen = 1;
+            const headLen = 0.25;
+            const headW = 0.1;
+
+            // X axis - Red
+            const arrowX = new THREE.ArrowHelper(
+                new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0),
+                axisLen, 0xff0000, headLen, headW
+            );
+            axisScene.add(arrowX);
+
+            // Y axis - Green
+            const arrowY = new THREE.ArrowHelper(
+                new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0),
+                axisLen, 0x00cc00, headLen, headW
+            );
+            axisScene.add(arrowY);
+
+            // Z axis - Blue
+            const arrowZ = new THREE.ArrowHelper(
+                new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0),
+                axisLen, 0x0066ff, headLen, headW
+            );
+            axisScene.add(arrowZ);
+        }
+
+        function createAxisLabels() {
+            // 기존 라벨 제거
+            document.querySelectorAll('.axis-label').forEach(el => el.remove());
+
+            const labels = [
+                { text: 'X', color: '#ff0000', dir: new THREE.Vector3(1, 0, 0) },
+                { text: 'Y', color: '#00cc00', dir: new THREE.Vector3(0, 1, 0) },
+                { text: 'Z', color: '#0066ff', dir: new THREE.Vector3(0, 0, 1) },
+            ];
+            const axisLabelEls = [];
+            labels.forEach(l => {
+                const div = document.createElement('div');
+                div.className = 'axis-label';
+                div.textContent = l.text;
+                div.style.cssText = `position:absolute;color:${l.color};font-size:12px;font-weight:bold;font-family:monospace;pointer-events:none;z-index:101;`;
+                VIS_CONTAINER.appendChild(div);
+                axisLabelEls.push({ element: div, dir: l.dir });
+            });
+            return axisLabelEls;
+        }
+
+        let axisLabelEls = [];
+
+        function updateAxisLabels() {
+            if (!axisCamera || axisLabelEls.length === 0) return;
+            const size = 120;
+            const h = VIS_CONTAINER.clientHeight;
+            for (const label of axisLabelEls) {
+                // 축 끝점(3D)을 axisCamera로 투영
+                const v = label.dir.clone().project(axisCamera);
+                const sx = (v.x * 0.5 + 0.5) * size;
+                const sy = (1 - (v.y * 0.5 + 0.5)) * size;
+                label.element.style.left = (sx - 4) + 'px';
+                label.element.style.top = (h - size + sy - 6) + 'px';
+            }
+        }
+
         // 4. Animation/Rendering Loop
         function animate() {
             requestAnimationFrame(animate);
             if (controls) controls.update();
-            
+
             // Update labels on every frame
             updateLabels();
 
             if (renderer && scene && camera) {
+                // 메인 씬 렌더링
                 renderer.render(scene, camera);
+
+                // 좌표축 아이콘 렌더링 (좌하단 120x120)
+                if (axisScene && axisCamera) {
+                    // 메인 카메라의 회전(quaternion)을 축 카메라에 동기화
+                    axisCamera.quaternion.copy(camera.quaternion);
+                    axisCamera.position.set(0, 0, 4).applyQuaternion(camera.quaternion);
+
+                    const axisSize = 120;
+                    renderer.setViewport(0, 0, axisSize, axisSize);
+                    renderer.setScissor(0, 0, axisSize, axisSize);
+                    renderer.setScissorTest(true);
+                    renderer.clearDepth();
+                    renderer.render(axisScene, axisCamera);
+
+                    // 뷰포트 복원
+                    const w = VIS_CONTAINER.clientWidth;
+                    const h = VIS_CONTAINER.clientHeight;
+                    renderer.setViewport(0, 0, w, h);
+                    renderer.setScissor(0, 0, w, h);
+                    renderer.setScissorTest(false);
+
+                    updateAxisLabels();
+                }
             }
         }
 
@@ -734,20 +1000,306 @@
         // 7. Window Resize Handler
         function onWindowResize() {
             if (camera && renderer && VIS_CONTAINER) {
-                camera.aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
+                const w = VIS_CONTAINER.clientWidth;
+                const h = VIS_CONTAINER.clientHeight;
+                if (camera.isPerspectiveCamera) {
+                    camera.aspect = w / h;
+                } else {
+                    const oldH = camera.top - camera.bottom;
+                    const newAspect = w / h;
+                    const halfH = oldH / 2;
+                    camera.left = -halfH * newAspect;
+                    camera.right = halfH * newAspect;
+                }
                 camera.updateProjectionMatrix();
-                renderer.setSize(VIS_CONTAINER.clientWidth, VIS_CONTAINER.clientHeight);
+                renderer.setSize(w, h);
             }
         }
         
+        // --- Camera Switch (Perspective ↔ Orthographic) ---
+        function switchCamera(usePerspective) {
+            const pos = camera.position.clone();
+            const target = controls.target.clone();
+            const dist = pos.distanceTo(target);
+            const aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
+
+            if (usePerspective) {
+                camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 100000);
+            } else {
+                // Ortho 크기: 현재 perspective에서 보이는 영역 기준
+                const fovRad = (camera.isPerspectiveCamera) ? camera.fov * Math.PI / 180 : 1;
+                const halfH = (camera.isPerspectiveCamera) ? dist * Math.tan(fovRad / 2) : camera.top;
+                const halfW = halfH * aspect;
+                camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 100000);
+            }
+
+            camera.up.set(0, 0, 1); // Z-up
+            camera.position.copy(pos);
+            camera.lookAt(target);
+
+            // OrbitControls 재생성
+            controls.dispose();
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.target.copy(target);
+            controls.mouseButtons = {
+                LEFT: THREE.MOUSE.ROTATE,
+                MIDDLE: THREE.MOUSE.DOLLY,
+                RIGHT: THREE.MOUSE.PAN
+            };
+            controls.update();
+        }
+
+        // --- Fit All ---
+        function fitAll() {
+            if (!globalBounds || !camera || !controls) return;
+            const bounds = globalBounds;
+            const center = new THREE.Vector3(
+                (bounds.minX + bounds.maxX) / 2,
+                (bounds.minY + bounds.maxY) / 2,
+                (bounds.minZ + bounds.maxZ) / 2
+            );
+            const sizeX = bounds.maxX - bounds.minX;
+            const sizeY = bounds.maxY - bounds.minY;
+            const sizeZ = bounds.maxZ - bounds.minZ;
+            const radius = Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2;
+
+            // 카메라 방향 유지
+            const currentDir = new THREE.Vector3().subVectors(camera.position, controls.target);
+            if (currentDir.length() < 0.001) currentDir.set(-1, -1, 0.5);
+            currentDir.normalize();
+
+            if (camera.isPerspectiveCamera) {
+                const fovRad = camera.fov * Math.PI / 180;
+                const aspect = camera.aspect;
+                const distV = radius / Math.sin(fovRad / 2);
+                const distH = radius / Math.sin(Math.atan(Math.tan(fovRad / 2) * aspect));
+                const distance = Math.max(distV, distH);
+                controls.target.copy(center);
+                camera.position.copy(center).add(currentDir.clone().multiplyScalar(distance));
+                camera.near = distance / 100;
+                camera.far = distance * 10;
+            } else {
+                const aspect = VIS_CONTAINER.clientWidth / VIS_CONTAINER.clientHeight;
+                const halfH = radius * 1.05;
+                const halfW = halfH * aspect;
+                camera.left = -halfW;
+                camera.right = halfW;
+                camera.top = halfH;
+                camera.bottom = -halfH;
+                camera.near = 0.1;
+                camera.far = radius * 20;
+                const distance = radius * 3;
+                controls.target.copy(center);
+                camera.position.copy(center).add(currentDir.clone().multiplyScalar(distance));
+            }
+            camera.updateProjectionMatrix();
+            controls.update();
+        }
+
+        // --- Window Zoom (click-move-click) ---
+        function activateWindowZoom() {
+            windowZoomActive = true;
+            zoomDragStart = null; // 첫 번째 클릭 대기 상태
+            if (controls) controls.enabled = false;
+            if (renderer) renderer.domElement.style.cursor = 'crosshair';
+            const btn = document.getElementById('btn-window-zoom');
+            if (btn) {
+                btn.classList.remove('bg-gray-600', 'hover:bg-gray-700');
+                btn.classList.add('bg-yellow-500', 'hover:bg-yellow-600');
+            }
+        }
+
+        function deactivateWindowZoom() {
+            windowZoomActive = false;
+            zoomDragStart = null;
+            if (renderer) renderer.domElement.style.cursor = 'default';
+            const btn = document.getElementById('btn-window-zoom');
+            if (btn) {
+                btn.classList.remove('bg-yellow-500', 'hover:bg-yellow-600');
+                btn.classList.add('bg-gray-600', 'hover:bg-gray-700');
+            }
+            const rect = document.getElementById('zoom-selection-rect');
+            if (rect) rect.style.display = 'none';
+            if (controls) controls.enabled = true;
+        }
+
+        function onZoomClick(event) {
+            if (!windowZoomActive || event.button !== 0) return;
+            event.stopPropagation();
+            event.preventDefault();
+            const visRect = VIS_CONTAINER.getBoundingClientRect();
+            const x = event.clientX - visRect.left;
+            const y = event.clientY - visRect.top;
+
+            if (!zoomDragStart) {
+                // 첫 번째 클릭: 시작점 설정
+                zoomDragStart = { x, y };
+                const selRect = document.getElementById('zoom-selection-rect');
+                if (selRect) {
+                    selRect.style.display = 'block';
+                    selRect.style.left = x + 'px';
+                    selRect.style.top = y + 'px';
+                    selRect.style.width = '0px';
+                    selRect.style.height = '0px';
+                }
+            } else {
+                // 두 번째 클릭: 윈도우 확정
+                const left = Math.min(zoomDragStart.x, x);
+                const top = Math.min(zoomDragStart.y, y);
+                const width = Math.abs(x - zoomDragStart.x);
+                const height = Math.abs(y - zoomDragStart.y);
+
+                if (width > 10 && height > 10) {
+                    performWindowZoom(left, top, width, height, visRect.width, visRect.height);
+                }
+                deactivateWindowZoom();
+            }
+        }
+
+        function onZoomMouseMove(event) {
+            if (!windowZoomActive || !zoomDragStart) return;
+            const visRect = VIS_CONTAINER.getBoundingClientRect();
+            const currentX = event.clientX - visRect.left;
+            const currentY = event.clientY - visRect.top;
+            const selRect = document.getElementById('zoom-selection-rect');
+            if (selRect) {
+                const left = Math.min(zoomDragStart.x, currentX);
+                const top = Math.min(zoomDragStart.y, currentY);
+                const width = Math.abs(currentX - zoomDragStart.x);
+                const height = Math.abs(currentY - zoomDragStart.y);
+                selRect.style.left = left + 'px';
+                selRect.style.top = top + 'px';
+                selRect.style.width = width + 'px';
+                selRect.style.height = height + 'px';
+            }
+        }
+
+        function performWindowZoom(left, top, width, height, viewWidth, viewHeight) {
+            const oldDist = camera.position.distanceTo(controls.target);
+
+            // 타겟 평면에서 실제로 보이는 3D 영역 크기
+            let visibleH, visibleW;
+            if (camera.isPerspectiveCamera) {
+                const fovRad = camera.fov * Math.PI / 180;
+                visibleH = 2 * oldDist * Math.tan(fovRad / 2);
+                visibleW = visibleH * camera.aspect;
+            } else {
+                visibleH = camera.top - camera.bottom;
+                visibleW = camera.right - camera.left;
+            }
+
+            // 윈도우 중심의 화면 중앙으로부터의 픽셀 오프셋
+            const dxPx = (left + width / 2) - viewWidth / 2;
+            const dyPx = (top + height / 2) - viewHeight / 2;
+
+            // 픽셀 오프셋 → 3D 월드 오프셋
+            const worldDx = (dxPx / viewWidth) * visibleW;
+            const worldDy = -(dyPx / viewHeight) * visibleH;
+
+            // 카메라의 right, up 벡터
+            const camDir = new THREE.Vector3();
+            camera.getWorldDirection(camDir);
+            const camRight = new THREE.Vector3().crossVectors(camDir, camera.up).normalize();
+            const camUp = new THREE.Vector3().crossVectors(camRight, camDir).normalize();
+
+            // 패닝: 카메라와 타겟을 동일하게 이동
+            const panOffset = new THREE.Vector3()
+                .addScaledVector(camRight, worldDx)
+                .addScaledVector(camUp, worldDy);
+            controls.target.add(panOffset);
+            camera.position.add(panOffset);
+
+            // 줌
+            const zoomFactor = Math.min(viewWidth / width, viewHeight / height);
+            if (camera.isPerspectiveCamera) {
+                const newDist = oldDist / zoomFactor;
+                camera.position.copy(controls.target).addScaledVector(camDir, -newDist);
+            } else {
+                camera.left /= zoomFactor;
+                camera.right /= zoomFactor;
+                camera.top /= zoomFactor;
+                camera.bottom /= zoomFactor;
+            }
+
+            camera.updateProjectionMatrix();
+            controls.update();
+        }
+
         // 8. DOM Content Loaded Event Handler
         document.addEventListener('DOMContentLoaded', () => {
             const loadButton = document.getElementById('load-button');
             const mctInput = document.getElementById('mct-input');
             const toggleLabelsCheckbox = document.getElementById('toggle-labels');
 
+            // Theme: restore saved preference
+            const themeSelect = document.getElementById('theme-select');
+            const savedThemeOnLoad = localStorage.getItem('modelviewer-theme') || 'dark';
+            themeSelect.value = savedThemeOnLoad;
+
             initScene();
+            initAxisHelper();
+            axisLabelEls = createAxisLabels();
             animate();
+
+            // Apply theme after scene is ready
+            applyTheme(savedThemeOnLoad);
+
+            // Theme select change event
+            themeSelect.addEventListener('change', () => {
+                applyTheme(themeSelect.value);
+            });
+
+            // Fit All button
+            document.getElementById('btn-fit-all').addEventListener('click', fitAll);
+
+            // Window Zoom button (toggle)
+            document.getElementById('btn-window-zoom').addEventListener('click', () => {
+                if (camera.isPerspectiveCamera) {
+                    alert('윈도우 줌 기능은 원근투영이 꺼진 상태에서만 작동합니다.');
+                    return;
+                }
+                if (windowZoomActive) {
+                    deactivateWindowZoom();
+                } else {
+                    activateWindowZoom();
+                }
+            });
+
+            // Window Zoom mouse events on visualization container
+            VIS_CONTAINER.addEventListener('click', onZoomClick, false);
+            VIS_CONTAINER.addEventListener('mousemove', onZoomMouseMove, false);
+
+            // ESC key to cancel window zoom
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && windowZoomActive) {
+                    deactivateWindowZoom();
+                }
+            });
+
+            // Perspective toggle
+            document.getElementById('toggle-perspective').addEventListener('change', (e) => {
+                switchCamera(e.target.checked);
+            });
+
+            // File Open Button
+            const fileInput = document.getElementById('file-input');
+            document.getElementById('file-open-button').addEventListener('click', () => {
+                fileInput.click();
+            });
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    mctInput.value = ev.target.result;
+                    // 자동으로 로드 실행
+                    loadButton.click();
+                };
+                reader.readAsText(file);
+                fileInput.value = ''; // 같은 파일 재선택 가능하도록 초기화
+            });
 
             // Load Button Click Event
             loadButton.addEventListener('click', () => {
